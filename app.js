@@ -270,15 +270,11 @@ async function generateContent(niche) {
     // المتوقع من الـ Webhook: { ar: { title, description, hashtags, subtitle }, en: {...} }
   }
 
-  // ── خيار 2: OpenAI مباشرة ──────────────────────────────
+  // ── خيار 2: Anthropic API مباشرة ──────────────────────
   if (apiKey) {
     const prompt = `أنت خبير محتوى سوشيال ميديا. اصنع فيديو ريلز لمجال "${niche}".
-أعطني JSON بهذا الشكل:
-{
-  "ar": { "title": "...", "description": "...", "hashtags": ["..."], "subtitle": "..." },
-  "en": { "title": "...", "description": "...", "hashtags": ["..."], "subtitle": "..." }
-}
-العنوان جذاب مع إيموجي. الوصف 3-4 جمل حماسية. 6-8 هاشتاقات. لا تضف أي كلام خارج الـ JSON.`;
+أعطني JSON فقط بهذا الشكل بدون أي نص إضافي ولا backticks:
+{"ar":{"title":"عنوان عربي جذاب مع إيموجي","description":"وصف عربي حماسي 3-4 جمل","hashtags":["#هاشتاق1","#هاشتاق2","#هاشتاق3","#هاشتاق4","#هاشتاق5"],"subtitle":"جملة قصيرة تظهر في الفيديو"},"en":{"title":"Catchy English title with emoji","description":"Engaging English description 3-4 sentences","hashtags":["#hashtag1","#hashtag2","#hashtag3","#hashtag4","#hashtag5"],"subtitle":"Short subtitle for the video"}}`;
 
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -289,13 +285,34 @@ async function generateContent(niche) {
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
-        max_tokens: 800,
+        max_tokens: 1000,
         messages: [{ role: 'user', content: prompt }]
       })
     });
+
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData?.error?.message || `API Error: ${res.status}`);
+    }
+
     const data = await res.json();
-    const text = data.content?.[0]?.text || '{}';
-    return JSON.parse(text);
+    let text = data.content?.[0]?.text || '';
+
+    // تنظيف الرد من أي backticks أو نص إضافي
+    text = text.replace(/```json/gi, '').replace(/```/g, '').trim();
+
+    // استخراج أول JSON صالح من الرد
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error('لم يُرجع الـ API بيانات صحيحة');
+
+    const parsed = JSON.parse(jsonMatch[0]);
+
+    // التحقق من وجود البيانات الأساسية
+    if (!parsed.ar || !parsed.en) throw new Error('البيانات المُرجعة غير مكتملة');
+    if (!Array.isArray(parsed.ar.hashtags)) parsed.ar.hashtags = [];
+    if (!Array.isArray(parsed.en.hashtags)) parsed.en.hashtags = [];
+
+    return parsed;
   }
 
   // ── خيار 3: Mock Data ──────────────────────────────────
@@ -346,9 +363,18 @@ async function handleGenerate() {
     else showToast('🎉 تم التوليد بنجاح!');
 
   } catch (err) {
-    console.error(err);
-    showToast('❌ خطأ: ' + err.message);
+    console.error('ReelsAI Error:', err);
+    const msg = err.message || 'خطأ غير معروف';
+    showToast('❌ خطأ: ' + msg.slice(0, 80));
     dom.progressSection.classList.remove('visible');
+    // fallback: استخدم Mock Data عند فشل الـ API
+    try {
+      const fallback = MOCK_LIBRARY[niche] || MOCK_LIBRARY['مخصص'];
+      renderResults(fallback, niche);
+      dom.resultsSection.classList.add('visible');
+      dom.resultsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      setTimeout(() => showToast('⚠️ فشل الـ API — تم عرض بيانات تجريبية'), 3500);
+    } catch(e2) { console.error(e2); }
   }
 
   isGenerating = false;
@@ -367,6 +393,15 @@ function renderResults(data, niche) {
 
 function renderPane(paneId, d, niche, lang) {
   const pane = document.getElementById(paneId);
+  if (!pane) return;
+
+  // حماية ضد بيانات ناقصة
+  if (!d || typeof d !== 'object') d = {};
+  d.title       = d.title       || '(لا عنوان)';
+  d.description = d.description || '(لا وصف)';
+  d.subtitle    = d.subtitle    || d.title;
+  d.hashtags    = Array.isArray(d.hashtags) ? d.hashtags : [];
+
   const isAr = (lang === 'ar');
   const mockData = MOCK_LIBRARY[niche] || MOCK_LIBRARY['مخصص'];
   const gradient = (mockData[lang] || mockData['ar'])?.posterGradient || 'linear-gradient(160deg, #1a0b2e, #0d0820)';
